@@ -80,6 +80,11 @@ class CustomerSubscription(SDNetBase):
         server_default="0.00",
     )
 
+    billing_date = Column(
+        DateTime,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+
     created_at = Column(
         DateTime,
         server_default=text("CURRENT_TIMESTAMP"),
