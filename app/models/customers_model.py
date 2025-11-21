@@ -7,6 +7,7 @@ from sqlalchemy import (
     Enum,
     MetaData,
     text,
+    DECIMAL,
 )
 from sqlalchemy.orm import declarative_base, relationship
 
@@ -57,6 +58,43 @@ class CustomerAddress(SDNetBase):
     created_at = Column(
         DateTime,
         server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
+class CustomerSubscription(SDNetBase):
+    __tablename__ = "customer_subscriptions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # FK to customers.username
+    customer_username = Column(
+        String(100),
+        ForeignKey("customers.username"),
+        nullable=False,
+    )
+
+    # FK to services.service_code
+    service_code = Column(
+        String(50),
+        ForeignKey("services.service_code"),
+        nullable=False,
+    )
+
+    amount = Column(
+        DECIMAL(10, 2),
+        nullable=False,
+        server_default="0.00",
+    )
+
+    created_at = Column(
+        DateTime,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+
+    modified_at = Column(
+        DateTime,
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
     )
 
  
