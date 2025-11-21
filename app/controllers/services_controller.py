@@ -46,15 +46,6 @@ def get_next_service_code_logic():
 
 
 def save_service_logic(data: dict):
-    """
-    Create or update a service.
-    Expected fields:
-      - idservice (optional for update)
-      - service_code (optional for create: if missing, auto-generated)
-      - service_name (required)
-      - service_price (required, numeric)
-      - service_status (optional: 'active' | 'inactive', default 'active')
-    """
     required = ["service_name", "service_price"]
     missing = [f for f in required if not str(data.get(f, "")).strip()]
 
@@ -71,7 +62,6 @@ def save_service_logic(data: dict):
         service_id = data.get("idservice") or data.get("id")
 
         if service_id:
-            # UPDATE
             service = (
                 session.query(Service)
                 .filter_by(idservice=service_id)
@@ -80,8 +70,6 @@ def save_service_logic(data: dict):
             if not service:
                 return jsonify({"error": "Service not found"}), 404
         else:
-            # CREATE
-            # If service_code not provided, auto-generate
             raw_code = (data.get("service_code") or "").strip()
             if not raw_code:
                 raw_code = get_next_service_code(session)
@@ -92,24 +80,24 @@ def save_service_logic(data: dict):
             )
             session.add(service)
 
-        # Common fields
-        # Service code is usually immutable, but we allow updating if provided
         service_code = (data.get("service_code") or service.service_code or "").strip()
         if not service_code:
-          # Safety fallback
-          service_code = get_next_service_code(session)
+            service_code = get_next_service_code(session)
         service.service_code = service_code
 
         service.service_name = data["service_name"].strip()
 
-        # Price as Decimal
         try:
             price_str = str(data["service_price"]).strip()
             service.service_price = Decimal(price_str)
         except Exception:
             return jsonify({"error": "service_price must be numeric"}), 400
 
-        # Status: 'active' / 'inactive'
+        currency = (data.get("service_currency") or "USD").strip().upper()
+        if currency not in ("USD", "LBP"):
+            currency = "USD"
+        service.service_currency = currency
+
         status = (data.get("service_status") or "active").strip().lower()
         if status not in ("active", "inactive"):
             status = "active"
@@ -120,7 +108,8 @@ def save_service_logic(data: dict):
         return jsonify({
             "status": "success",
             "idservice": service.idservice,
-            "service_code": service.service_code
+            "service_code": service.service_code,
+            "service_currency": service.service_currency
         }), (201 if not service_id else 200)
 
     except SQLAlchemyError as e:
@@ -129,6 +118,7 @@ def save_service_logic(data: dict):
 
     finally:
         session.close()
+
 
 
 def get_services_logic():
@@ -153,6 +143,7 @@ def get_services_logic():
                 "service_name": r.service_name,
                 "service_price": float(r.service_price) if r.service_price is not None else None,
                 "service_status": r.service_status,
+                "service_currency": r.service_currency,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
                 "modified_at": r.modified_at.isoformat() if r.modified_at else None,
             })

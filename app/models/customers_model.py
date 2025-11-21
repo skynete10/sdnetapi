@@ -3,13 +3,12 @@ from sqlalchemy import (
     Integer,
     String,
     DateTime,
-    ForeignKey,
     Enum,
     MetaData,
     text,
     DECIMAL,
 )
-from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.orm import declarative_base
 
 sdnet_metadata = MetaData()
 SDNetBase = declarative_base(metadata=sdnet_metadata)
@@ -33,8 +32,6 @@ class Customer(SDNetBase):
         server_default=text("CURRENT_TIMESTAMP"),
         onupdate=text("CURRENT_TIMESTAMP")
     )
-
-    
 
 
 class CustomerAddress(SDNetBase):
@@ -66,18 +63,15 @@ class CustomerSubscription(SDNetBase):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
 
-    # FK to customers.username
+    # NO FOREIGN KEYS — now treated as normal text columns
     customer_username = Column(
         String(100),
-        ForeignKey("customers.username"),
-        nullable=False,
+        nullable=False
     )
 
-    # FK to services.service_code
     service_code = Column(
         String(50),
-        ForeignKey("services.service_code"),
-        nullable=False,
+        nullable=False
     )
 
     amount = Column(
@@ -96,5 +90,3 @@ class CustomerSubscription(SDNetBase):
         server_default=text("CURRENT_TIMESTAMP"),
         onupdate=text("CURRENT_TIMESTAMP"),
     )
-
- 

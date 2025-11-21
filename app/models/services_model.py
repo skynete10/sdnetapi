@@ -18,6 +18,7 @@ class Service(SDNetBase):
     service_code = Column(String(50), unique=True, nullable=False)
     service_name = Column(String(100), nullable=False)
     service_price = Column(DECIMAL(10, 2), nullable=False, server_default="0.00")
+    service_currency =Column(String(3),nullable=False)
     service_status = Column(String(10), nullable=False, server_default="active")
 
     created_at = Column(

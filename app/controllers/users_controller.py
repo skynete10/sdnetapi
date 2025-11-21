@@ -55,6 +55,7 @@ def login_controller(username, password, token=None):
         return {
             "idusers": user.idusers,
             "username": user.username,
+            "fullname": user.fullname,
             "mobile": user.mobile,
             "app_token": user.app_token
         }
