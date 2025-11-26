@@ -22,3 +22,7 @@ def save_customer_route():
 @customers_bp.route("/api/customers/count", methods=["GET"])
 def customers_count_route():
     return customers_controller.customers_count()
+
+@customers_bp.route("/api/customers/update-status", methods=["POST"])
+def update_customer_status_route():
+    return customers_controller.update_customer_status()

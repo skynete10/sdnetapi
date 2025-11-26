@@ -12,31 +12,14 @@ from datetime import datetime, date
 
 
 def save_customer_subscription_logic(data: dict):
-    """
-    Create or update a customer subscription.
-
-    Expected payload:
-    {
-        "id": optional, for edit
-        "customer_username": str,
-        "service_code": str,
-        "amount": str | number,
-        "billing_date": optional str in "YYYY-MM-DD"
-    }
-    """
-
     required = ["customer_username", "service_code", "amount"]
     missing = [f for f in required if not str(data.get(f, "")).strip()]
     if missing:
-        return jsonify({
-            "error": "Validation failed",
-            "missing_fields": missing
-        }), 400
+        return jsonify({"error": "Validation failed", "missing_fields": missing}), 400
 
     customer_username = str(data.get("customer_username", "")).strip()
     service_code = str(data.get("service_code", "")).strip()
 
-    # validate amount (stored in DB as 'amount')
     try:
         amount = Decimal(str(data.get("amount", "0")).strip())
     except Exception:
@@ -45,17 +28,30 @@ def save_customer_subscription_logic(data: dict):
     if amount < 0:
         return jsonify({"error": "amount cannot be negative"}), 400
 
-    # validate/parse billing_date (optional) - expects full date now
     billing_date_raw = str(data.get("billing_date", "")).strip()
     billing_date_value = None
-
     if billing_date_raw:
         try:
-            # frontend sends "YYYY-MM-DD"
-            dt = datetime.strptime(billing_date_raw, "%Y-%m-%d")
-            billing_date_value = dt.date()
+            billing_date_value = datetime.strptime(billing_date_raw, "%Y-%m-%d").date()
         except Exception:
             return jsonify({"error": "billing_date must be in YYYY-MM-DD format"}), 400
+
+    manager_empcode_raw = data.get("manager_empcode")
+    manager_empcode_value = str(manager_empcode_raw).strip() if manager_empcode_raw else None
+
+    # ======================================================
+    #  SIMPLE LOGIC:
+    #  if "stopped" → 0
+    #  else → 1
+    # ======================================================
+    raw_status = data.get("subscription_status", data.get("status", None))
+
+    if raw_status is None:
+        subscription_status_value = 1  # default active
+    else:
+        raw = str(raw_status).strip().lower()
+        subscription_status_value = 0 if raw == "stopped" else 1
+    # ======================================================
 
     db = get_db()
     s = db.get_session()
@@ -64,39 +60,54 @@ def save_customer_subscription_logic(data: dict):
         sub_id = data.get("id")
 
         if sub_id:
-            # UPDATE
-            subscription = (
-                s.query(CustomerSubscription)
-                .filter_by(id=sub_id)
-                .first()
-            )
+            subscription = s.query(CustomerSubscription).filter_by(id=sub_id).first()
             if not subscription:
                 return jsonify({"error": "Subscription not found"}), 404
+
+            exists_for_customer = (
+                s.query(CustomerSubscription)
+                .filter(
+                    CustomerSubscription.customer_username == customer_username,
+                    CustomerSubscription.id != sub_id
+                )
+                .first()
+            )
+            if exists_for_customer:
+                return jsonify({"error": "This client already has a subscription."}), 409
+
         else:
-            # CREATE
+            exists_for_customer = (
+                s.query(CustomerSubscription)
+                .filter_by(customer_username=customer_username)
+                .first()
+            )
+            if exists_for_customer:
+                return jsonify({"error": "This client already has a subscription."}), 409
+
             subscription = CustomerSubscription(
                 customer_username=customer_username,
                 service_code=service_code,
                 amount=amount,
-                billing_date=billing_date_value  # set if provided
+                billing_date=billing_date_value,
+                subscription_status=subscription_status_value,
             )
             s.add(subscription)
 
-        # common fields (always update these)
         subscription.customer_username = customer_username
         subscription.service_code = service_code
         subscription.amount = amount
 
-        # only overwrite billing_date if client sent it
         if billing_date_raw:
             subscription.billing_date = billing_date_value
 
+        subscription.emp_manager = manager_empcode_value
+        subscription.subscription_status = subscription_status_value
+
         s.commit()
 
-        return jsonify({
-            "status": "success",
-            "id": subscription.id
-        }), (201 if not sub_id else 200)
+        return jsonify({"status": "success", "id": subscription.id}), (
+            201 if not sub_id else 200
+        )
 
     except SQLAlchemyError as e:
         s.rollback()
@@ -104,6 +115,8 @@ def save_customer_subscription_logic(data: dict):
 
     finally:
         s.close()
+
+
 
 
 def get_customer_subscriptions_logic():
@@ -118,6 +131,8 @@ def get_customer_subscriptions_logic():
                 Customer.fullname.label("customer_fullname"),
                 Service.service_code,
                 Service.service_name,
+                CustomerSubscription.emp_manager,
+                CustomerSubscription.subscription_status,
                 CustomerSubscription.amount.label("amount"),
                 CustomerSubscription.billing_date.label("billing_date"),
             )
@@ -140,6 +155,8 @@ def get_customer_subscriptions_logic():
                 "customer_fullname": r.customer_fullname or "",
                 "service_code": r.service_code,
                 "service_name": r.service_name or "",
+                "emp_manager": r.emp_manager or "",
+                "subscription_status": r.subscription_status or "",
                 "amount": float(r.amount) if r.amount is not None else 0.0,
                 "billing_date": (
                     r.billing_date.strftime("%Y-%m-%d")
@@ -153,6 +170,32 @@ def get_customer_subscriptions_logic():
         ]
 
         return jsonify(result), 200
+
+    finally:
+        s.close()
+
+def delete_subscription_logic(sub_id: int):
+    """
+    Delete a customer subscription by ID.
+    """
+
+    db = get_db()
+    s = db.get_session()
+
+    try:
+        sub = s.query(CustomerSubscription).filter_by(id=sub_id).first()
+
+        if not sub:
+            return jsonify({"error": "Subscription not found"}), 404
+
+        s.delete(sub)
+        s.commit()
+
+        return jsonify({"success": True, "deleted_id": sub_id}), 200
+
+    except SQLAlchemyError as e:
+        s.rollback()
+        return jsonify({"error": str(e)}), 500
 
     finally:
         s.close()

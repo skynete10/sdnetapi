@@ -99,3 +99,34 @@ class EmployeeSalary(SDNetBase):
         server_default=text("CURRENT_TIMESTAMP"),
         onupdate=text("CURRENT_TIMESTAMP")
     )
+
+
+class EmpCustRelation(SDNetBase):
+    __tablename__ = "emp_cust_relation"
+
+    idemp_cust_relation = Column(
+        Integer,
+        primary_key=True,
+        autoincrement=True
+    )
+
+    emp_username = Column(
+        String(45),
+        nullable=True
+    )
+
+    cust_username = Column(
+        String(45),
+        nullable=True
+    )
+
+    created_at = Column(
+        DateTime,
+        server_default=text("CURRENT_TIMESTAMP")
+    )
+
+    modified_at = Column(
+        DateTime,
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP")
+    )

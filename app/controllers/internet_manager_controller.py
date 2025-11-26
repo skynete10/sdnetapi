@@ -2,7 +2,7 @@ from flask import jsonify
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.connections import get_db
-from app.models.customers_model import Customer,CustomerAddress  
+from app.models.customers_model import Customer,CustomerAddress,CustomerSubscription 
 
 
 def get_internet_customers_logic():
@@ -31,6 +31,29 @@ def get_internet_customers_logic():
             .all()
         )
 
+        customerSubsc_array = {}
+
+        sub_rows = (
+         s.query(
+        CustomerSubscription.customer_username,
+        CustomerSubscription.billing_date,
+        CustomerSubscription.amount
+        )
+        .filter(CustomerSubscription.customer_username.isnot(None))
+        .order_by(
+          CustomerSubscription.customer_username.asc(),
+          CustomerSubscription.billing_date.desc()
+        )
+        .all()
+        )
+
+        for u, bd, amt in sub_rows:
+          if u and u not in customerSubsc_array:
+            customerSubsc_array[u] = {
+              "billing_date": bd.isoformat() if bd else None,
+              "amount": float(amt or 0),
+            }
+
         result = []
         for r in rows:
             due_date_val = getattr(r, "due_date", None)
@@ -45,8 +68,8 @@ def get_internet_customers_logic():
                 "fullname": r.fullname or "",
                 "city": r.city or "",
                 "village": r.village or "",
-                "due_date": due_date_val.isoformat() if due_date_val else None,
-                "amount": float(amount_val or 0),
+                "due_date": customerSubsc_array.get(r.username, {}).get("billing_date"),
+                "amount": customerSubsc_array.get(r.username, {}).get("amount"),
                 "invoiced": bool(invoiced_val or False),
                 "payment": payment_val if payment_val in ("paid", "unpaid", "partial") else "unpaid",
                 "status": status_val if status_val in ("active", "stopped") else "active",

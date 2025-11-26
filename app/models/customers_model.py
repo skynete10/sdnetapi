@@ -7,6 +7,7 @@ from sqlalchemy import (
     MetaData,
     text,
     DECIMAL,
+    SmallInteger,
 )
 from sqlalchemy.orm import declarative_base
 
@@ -22,6 +23,13 @@ class Customer(SDNetBase):
     mobile = Column(String(20), nullable=False, unique=True)
     username = Column(String(50), nullable=False, unique=True)
     password_hash = Column(String(255), nullable=False)
+
+    # 1 = active, 0 = inactive
+    customer_status = Column(
+        SmallInteger,
+        nullable=False,
+        server_default="1",
+    )
 
     created_at = Column(
         DateTime,
@@ -84,6 +92,13 @@ class CustomerSubscription(SDNetBase):
         DateTime,
         server_default=text("CURRENT_TIMESTAMP"),
     )
+
+    emp_manager= Column(
+        String(100),
+        nullable=False
+    )
+
+    subscription_status = Column(SmallInteger, server_default="0")
 
     created_at = Column(
         DateTime,

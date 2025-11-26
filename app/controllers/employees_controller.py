@@ -1,12 +1,13 @@
 # app/controllers/employees_controller.py
 
-from flask import jsonify
+from flask import jsonify,request
 from app.connections import get_db
-from app.models.employees_model import Employee,EmployeeSalary
+from app.models.employees_model import Employee,EmployeeSalary,EmpCustRelation
+from app.models.customers_model import Customer,CustomerAddress
 from sqlalchemy.exc import SQLAlchemyError
 from decimal import Decimal
 from datetime import date
-from sqlalchemy import and_
+from sqlalchemy import and_,func
 
 
 def save_employee_logic(data):
@@ -338,3 +339,212 @@ def get_employees_with_salary_logic(salary_month: str = None):
         session.close()
 
 
+def get_customers_not_in_emp_relation():
+    db = get_db()
+    s = db.get_session()
+
+    try:
+        emp_username = request.args.get("emp_username", type=str)
+
+        subq = s.query(EmpCustRelation.cust_username)
+        if emp_username:
+            subq = subq.filter(EmpCustRelation.emp_username == emp_username)
+        subq = subq.subquery()
+
+        rows = (
+            s.query(
+                Customer.username,
+                Customer.fullname,
+                Customer.mobile,
+                CustomerAddress.city.label("addr_city"),
+                CustomerAddress.village.label("addr_village"),
+                CustomerAddress.street.label("addr_street"),
+                CustomerAddress.building.label("addr_building"),
+                CustomerAddress.floor.label("addr_floor"),
+            )
+            .outerjoin(
+                CustomerAddress,
+                Customer.username == CustomerAddress.username,
+            )
+            .filter(~Customer.username.in_(subq))
+            .order_by(Customer.fullname)
+            .all()
+        )
+
+        result = []
+        for r in rows:
+            # Build a single address string from available parts
+            address_parts = [
+                r.addr_city,
+                r.addr_village,
+                r.addr_street,
+                r.addr_building,
+                r.addr_floor,
+            ]
+            address = " ".join(
+                p.strip() for p in address_parts if p is not None and str(p).strip()
+            )
+
+            result.append(
+                {
+                    "username": r.username,
+                    "fullname": r.fullname,
+                    "mobile": r.mobile,
+                    "address": address,          # for filtering by first word
+                    "customeraddress": address,  # alias if you want this name too
+                }
+            )
+
+        return jsonify(result), 200
+
+    except SQLAlchemyError as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        s.close()
+
+def assign_customers_to_employee(emp_username: str, cust_usernames: list[str]):
+    """
+    Create EmpCustRelation rows for given employee and customer usernames.
+    Returns (result_dict, status_code)
+    """
+    db = get_db()
+    s = db.get_session()
+
+    try:
+        if not emp_username:
+            return {"error": "emp_username is required"}, 400
+
+        if not cust_usernames or not isinstance(cust_usernames, list):
+            return {"error": "cust_usernames must be a non-empty list"}, 400
+
+        # Fetch existing relations to avoid duplicates
+        existing_rows = (
+            s.query(EmpCustRelation.cust_username)
+            .filter(
+                EmpCustRelation.emp_username == emp_username,
+                EmpCustRelation.cust_username.in_(cust_usernames),
+            )
+            .all()
+        )
+        existing = {row.cust_username for row in existing_rows}
+
+        # Build new rows only for usernames not yet linked
+        to_insert = [
+            EmpCustRelation(emp_username=emp_username, cust_username=u)
+            for u in cust_usernames
+            if u not in existing
+        ]
+
+        if to_insert:
+            s.add_all(to_insert)
+            s.commit()
+
+        return {
+            "success": True,
+            "emp_username": emp_username,
+            "inserted_count": len(to_insert),
+            "skipped_existing": list(existing),
+        }, 200
+
+    except SQLAlchemyError as e:
+        s.rollback()
+        return {"error": str(e)}, 500
+
+    finally:
+        s.close()
+
+def load_customers_for_employee(emp_username: str):
+    """
+    Load customers already related to an employee via EmpCustRelation.
+
+    Returns:
+        (result: dict | list, status_code: int)
+    """
+    db = get_db()
+    s = db.get_session()
+
+    try:
+        if not emp_username:
+            return {"error": "emp_username is required"}, 400
+
+        # join EmpCustRelation -> Customer -> CustomerAddress (optional)
+        rows = (
+            s.query(
+                Customer.username,
+                Customer.fullname,
+                Customer.mobile,
+                func.concat_ws(
+                    " - ",
+                    CustomerAddress.city,
+                    CustomerAddress.village,
+                    CustomerAddress.street,
+                    CustomerAddress.building,
+                    CustomerAddress.floor,
+                ).label("customeraddress"),
+            )
+            .join(
+                EmpCustRelation,
+                EmpCustRelation.cust_username == Customer.username,
+            )
+            .outerjoin(
+                CustomerAddress,
+                CustomerAddress.username == Customer.username,
+            )
+            .filter(EmpCustRelation.emp_username == emp_username)
+            .order_by(Customer.fullname)
+            .all()
+        )
+
+        result = [
+            {
+                "username": r.username,
+                "fullname": r.fullname,
+                "mobile": r.mobile,
+                "customeraddress": r.customeraddress or "",
+            }
+            for r in rows
+        ]
+
+        return result, 200
+
+    except SQLAlchemyError as e:
+        # if you want to log:
+        # current_app.logger.exception("Error loading customers for employee")
+        return {"error": str(e)}, 500
+
+    finally:
+        s.close()
+
+
+def delete_customers_by_usernames(usernames: list):
+    """
+    Delete customers (and their addresses) completely from DB,
+    given a list of usernames.
+    """
+    db = get_db()
+    s = db.get_session()
+
+    try:
+      if not usernames:
+          return {"success": True, "deleted_customers": 0}, 200
+
+      # 1) delete addresses first (if FK)
+      s.query(CustomerAddress).filter(
+          CustomerAddress.username.in_(usernames)
+      ).delete(synchronize_session=False)
+
+      # 2) delete customer rows
+      deleted = s.query(Customer).filter(
+          Customer.username.in_(usernames)
+      ).delete(synchronize_session=False)
+
+      s.commit()
+
+      return {"success": True, "deleted_customers": deleted}, 200
+
+    except SQLAlchemyError as e:
+        s.rollback()
+        return {"error": str(e)}, 500
+
+    finally:
+        s.close()

@@ -1,9 +1,12 @@
 # app/controllers/customers_controller.py
 from flask import request, jsonify
 from app.connections import get_db
-from app.models.customers_model import Customer, CustomerAddress
+from app.models.customers_model import Customer, CustomerAddress,CustomerSubscription
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import func
+from decimal import Decimal,InvalidOperation
 import pandas as pd
+from app.models.services_model import Service
 import os
 
 
@@ -19,6 +22,7 @@ def get_customers():
                 Customer.fullname,
                 Customer.mobile,
                 Customer.username,
+                Customer.customer_status,
                 CustomerAddress.city,
                 CustomerAddress.village,
                 CustomerAddress.street,
@@ -36,6 +40,7 @@ def get_customers():
                 "mobile": r.mobile,
                 "username": r.username,
                 "city": r.city or "",
+                "customer_status": r.customer_status,
                 "village": r.village or "",
                 "street": r.street or "",
                 "building": r.building or "",
@@ -82,10 +87,13 @@ def import_customers_excel():
     customers = []
     customer_addresses = []
 
+    # We will also keep the raw price per row (string) for later
+    row_prices = []
+
     for _, row in df.iterrows():
         fullname = row.get("Full Name", "").strip()
         mobile = row.get("Mobile", "").strip()
-        price = row.get("Price", "").strip()  # not stored in DB here
+        price_raw = row.get("Price", "").strip()
         username = row.get("Username", "").strip()
 
         city = row.get("City", "").strip()
@@ -101,7 +109,7 @@ def import_customers_excel():
             {
                 "fullname": fullname,
                 "mobile": mobile,
-                "price": price,
+                "price": price_raw,  # keep original string for response
                 "username": username,
             }
         )
@@ -116,6 +124,8 @@ def import_customers_excel():
             }
         )
 
+        row_prices.append(price_raw)
+
     # ---- Insert / update in MySQL (upsert per row) ----
     db = get_db()
     session = db.get_session()
@@ -125,7 +135,62 @@ def import_customers_excel():
     created_addresses = 0
     updated_addresses = 0
 
+    created_services = 0
+    reused_services = 0
+    created_subscriptions = 0
+    updated_subscriptions = 0
+
     try:
+        # ----- Prepare Service code generation -----
+        # max existing service_code (like "000123")
+        max_code = session.query(func.max(Service.service_code)).scalar()
+        if max_code is None:
+            next_service_num = 1
+        else:
+            try:
+                next_service_num = int(max_code) + 1
+            except ValueError:
+                # if existing codes are weird, restart
+                next_service_num = 1
+
+        # cache: price_decimal -> Service instance
+        service_cache = {}
+
+        def get_or_create_service_for_price(price_decimal: Decimal) -> Service:
+            nonlocal next_service_num, created_services, reused_services
+
+            if price_decimal in service_cache:
+                reused_services += 1
+                return service_cache[price_decimal]
+
+            # Check in DB first (maybe exists from previous imports)
+            existing = (
+                session.query(Service)
+                .filter(Service.service_price == price_decimal)
+                .first()
+            )
+            if existing:
+                service_cache[price_decimal] = existing
+                reused_services += 1
+                return existing
+
+            # Create new Service with auto code/name like 000001
+            code_str = f"{next_service_num:06d}"
+            next_service_num += 1
+
+            new_service = Service(
+                service_code=code_str,
+                service_name=code_str,
+                service_price=price_decimal,
+                service_currency="USD",
+                service_status="1",  # as requested
+            )
+            session.add(new_service)
+            created_services += 1
+            service_cache[price_decimal] = new_service
+            return new_service
+
+        # ----- Loop rows and upsert everything -----
         for idx, c in enumerate(customers):
             username = c["username"]
             if not username:
@@ -140,14 +205,12 @@ def import_customers_excel():
             )
 
             if customer:
-                # Update existing customer
                 if c["fullname"]:
                     customer.fullname = c["fullname"]
                 if c["mobile"]:
                     customer.mobile = c["mobile"]
                 updated_customers += 1
             else:
-                # Create new customer
                 password_hash = c["mobile"] or "123456"
                 customer = Customer(
                     fullname=c["fullname"] or username,
@@ -168,7 +231,6 @@ def import_customers_excel():
             )
 
             if addr:
-                # Update existing address (only overwrite if Excel has value)
                 if a["city"]:
                     addr.city = a["city"]
                 if a["village"]:
@@ -179,7 +241,6 @@ def import_customers_excel():
                     addr.building = a["building"]
                 updated_addresses += 1
             else:
-                # Create new address
                 addr = CustomerAddress(
                     username=username,
                     city=a["city"] or None,
@@ -191,6 +252,48 @@ def import_customers_excel():
                 )
                 session.add(addr)
                 created_addresses += 1
+
+            # --- SERVICE + SUBSCRIPTION for this row (price) ---
+            price_str = row_prices[idx].strip()
+            if not price_str:
+                continue  # no price = no subscription
+
+            # clean common formatting, e.g. "25,000" -> "25000"
+            price_str_clean = price_str.replace(",", "")
+
+            try:
+                price_decimal = Decimal(price_str_clean)
+            except InvalidOperation:
+                # invalid number, skip subscription for this row
+                continue
+
+            # Get or create Service for this price
+            service = get_or_create_service_for_price(price_decimal)
+
+            # Upsert CustomerSubscription for (username, service_code)
+            sub = (
+                session.query(CustomerSubscription)
+                .filter(
+                    CustomerSubscription.customer_username == username,
+                    CustomerSubscription.service_code == service.service_code,
+                )
+                .first()
+            )
+
+            if sub:
+                sub.amount = price_decimal
+                updated_subscriptions += 1
+            else:
+                sub = CustomerSubscription(
+                    customer_username=username,
+                    service_code=service.service_code,
+                    amount=price_decimal,
+                    emp_manager="import_excel",  # or use current user if you have it
+                    # billing_date -> DB default (CURRENT_TIMESTAMP)
+                    # subscription_status -> DB default ("0")
+                )
+                session.add(sub)
+                created_subscriptions += 1
 
         session.commit()
 
@@ -213,6 +316,10 @@ def import_customers_excel():
                 "updated_customers": updated_customers,
                 "created_addresses": created_addresses,
                 "updated_addresses": updated_addresses,
+                "created_services": created_services,
+                "reused_services": reused_services,
+                "created_subscriptions": created_subscriptions,
+                "updated_subscriptions": updated_subscriptions,
                 "usernames_count": len(processed_usernames),
                 "customers": customers,
                 "customer_addresses": customer_addresses,
@@ -221,6 +328,7 @@ def import_customers_excel():
         ),
         200,
     )
+
 
 
 def save_customer():
@@ -283,3 +391,46 @@ def customers_count():
         return jsonify({"total": total}), 200
     finally:
         session.close()
+
+
+def update_customer_status():
+    data = request.get_json() or {}
+    customer_id = data.get("id")
+    status_str = (data.get("status") or "").strip().lower()
+
+    if not customer_id:
+        return jsonify({"error": "Missing customer id"}), 400
+
+    if status_str not in ("active", "inactive"):
+        return jsonify({"error": "Invalid status, must be 'active' or 'inactive'"}), 400
+
+    # map to tinyint: 1 = active, 0 = inactive
+    new_status = 1 if status_str == "active" else 0
+
+    db = get_db()
+    s = db.get_session()
+
+    try:
+        customer = s.query(Customer).filter_by(id=customer_id).first()
+        if not customer:
+            return jsonify({"error": "Customer not found"}), 404
+
+        # make sure this column exists in your model:
+        # customer_status = Column(SmallInteger, nullable=False, server_default="1")
+        customer.customer_status = new_status
+
+        s.commit()
+        return jsonify(
+            {
+                "status": "success",
+                "id": customer.id,
+                "customer_status": customer.customer_status,
+            }
+        ), 200
+
+    except Exception as e:
+        s.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        s.close()
+
