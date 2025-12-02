@@ -26,3 +26,7 @@ def customers_count_route():
 @customers_bp.route("/api/customers/update-status", methods=["POST"])
 def update_customer_status_route():
     return customers_controller.update_customer_status()
+
+@customers_bp.route("/api/customers/update-wish", methods=["POST"])
+def update_customer_wish_route():
+    return customers_controller.update_customer_wish()

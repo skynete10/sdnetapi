@@ -23,6 +23,7 @@ def get_customers():
                 Customer.mobile,
                 Customer.username,
                 Customer.customer_status,
+                Customer.wish,
                 CustomerAddress.city,
                 CustomerAddress.village,
                 CustomerAddress.street,
@@ -41,6 +42,7 @@ def get_customers():
                 "username": r.username,
                 "city": r.city or "",
                 "customer_status": r.customer_status,
+                "wish":r.wish,
                 "village": r.village or "",
                 "street": r.street or "",
                 "building": r.building or "",
@@ -427,6 +429,60 @@ def update_customer_status():
                 "customer_status": customer.customer_status,
             }
         ), 200
+
+    except Exception as e:
+        s.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        s.close()
+
+
+def update_customer_wish():
+    data = request.get_json() or {}
+    customer_id = data.get("id")
+    wish_val = data.get("wish")
+
+    if not customer_id:
+        return jsonify({"error": "Missing customer id"}), 400
+
+    if wish_val is None:
+        return jsonify({"error": "Missing wish value"}), 400
+
+    # Normalize wish to tinyint(1): 1 = wish, 0 = not wish
+    if isinstance(wish_val, bool):
+        new_wish = 1 if wish_val else 0
+    else:
+        s_val = str(wish_val).strip().lower()
+        if s_val in ("1", "true", "yes", "y", "on"):
+            new_wish = 1
+        elif s_val in ("0", "false", "no", "n", "off"):
+            new_wish = 0
+        else:
+            return jsonify({"error": "Invalid wish value"}), 400
+
+    db = get_db()
+    s = db.get_session()
+
+    try:
+        customer = s.query(Customer).filter_by(id=customer_id).first()
+        if not customer:
+            return jsonify({"error": "Customer not found"}), 404
+
+        # Make sure this column exists in your model, for example:
+        # wish = Column(SmallInteger, nullable=False, server_default="0")
+        customer.wish = new_wish
+
+        s.commit()
+        return (
+            jsonify(
+                {
+                    "status": "success",
+                    "id": customer.id,
+                    "wish": customer.wish,
+                }
+            ),
+            200,
+        )
 
     except Exception as e:
         s.rollback()

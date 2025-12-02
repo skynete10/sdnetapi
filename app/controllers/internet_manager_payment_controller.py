@@ -100,12 +100,7 @@ def get_internet_payments_controller(
 ) -> Union[List[Dict], Tuple[Dict, int]]:
     """
     Fetch payments for a given invoice.
-    - invoice_number: required
-    - invoice_month: 'YYYY-MM' or None (if None => all months)
-
-    Returns:
-      On success: [ { ... }, ... ]
-      On error: ({ "error": "..." }, 500) or ({"error": "...invalid..."}, 400)
+    Only rows where payment > 0 are returned.
     """
     db = get_db()
     session = db.get_session()
@@ -118,7 +113,10 @@ def get_internet_payments_controller(
             TransactionDetail.invoice_number == str(invoice_number)
         )
 
-        # optional filter by month: YYYY-MM (same as filterDate/draftFilterDate)
+        # 🔥 Only return rows that have an actual payment
+        q = q.filter(TransactionDetail.payment > 0)
+
+        # optional filter by invoice month (YYYY-MM)
         if invoice_month:
             try:
                 year_str, month_str = invoice_month.split("-")
@@ -146,7 +144,7 @@ def get_internet_payments_controller(
 
         data: List[Dict] = [
             {
-                "id": r.id,  # or r.idtransaction_detail
+                "id": r.id,
                 "payment_date": (
                     r.payment_date.isoformat() if r.payment_date else None
                 ),
@@ -165,3 +163,16 @@ def get_internet_payments_controller(
         return {"error": str(e)}, 500
     finally:
         session.close()
+
+def clear_payment(payment_id: int):
+    db = get_db()
+    session = db.get_session()
+
+    td = session.get(TransactionDetail, payment_id)
+    if td is None:
+        return None, session
+
+    # Reset payment values (modifies only in memory)
+    td.clear_payment()
+
+    return td, session

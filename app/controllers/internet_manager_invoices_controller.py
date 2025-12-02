@@ -7,6 +7,8 @@ from sqlalchemy import func, desc, and_
 from app.connections import get_db
 from app.models.customers_model import Customer
 from app.models.transaction_master_model import TransactionMaster
+from app.models.transaction_detail_model import TransactionDetail
+from typing import List, Dict
 
 bp = Blueprint("internet_manager_invoices", __name__)
 
@@ -261,17 +263,22 @@ def get_invoices_for_month():
     try:
         month = (request.args.get("month") or "").strip()
         if not month or len(month) != 7:
+            # invalid or missing month => just return empty list
             return jsonify([]), 200
 
-        start_date = f"{month}-01"
-        year, mon = month.split("-")
-        year = int(year)
-        mon = int(mon)
-        if mon == 12:
-            end_date = f"{year+1}-01-01"
-        else:
-            end_date = f"{year}-{str(mon+1).zfill(2)}-01"
+        # month format: YYYY-MM
+        year_str, mon_str = month.split("-")
+        year = int(year_str)
+        mon = int(mon_str)
 
+        # build [start_date, end_date) window
+        start_date = f"{month}-01"
+        if mon == 12:
+            end_date = f"{year + 1}-01-01"
+        else:
+            end_date = f"{year}-{str(mon + 1).zfill(2)}-01"
+
+        # 1️⃣ Subquery: get latest invoice_number per customer for that month
         subq = (
             s.query(
                 TransactionMaster.customer_username.label("cu"),
@@ -288,11 +295,35 @@ def get_invoices_for_month():
             .subquery()
         )
 
+        # 2️⃣ Subquery: sum of payments per invoice_number in the same date range
+        payments_subq = (
+            s.query(
+                TransactionDetail.invoice_number.label("inv_no"),
+                func.coalesce(func.sum(TransactionDetail.payment), 0).label(
+                    "sum_payments"
+                ),
+            )
+            .filter(
+                and_(
+                    TransactionDetail.payment_date >= start_date,
+                    TransactionDetail.payment_date < end_date,
+                    TransactionDetail.payment > 0,
+                )
+            )
+            .group_by(TransactionDetail.invoice_number)
+            .subquery()
+        )
+
+        # 3️⃣ Main query: join with both subqueries
         rows = (
             s.query(
                 TransactionMaster.customer_username,
                 TransactionMaster.invoice_number,
                 TransactionMaster.invoiced,
+                TransactionMaster.amount.label("invoice_amount"),
+                func.coalesce(payments_subq.c.sum_payments, 0).label(
+                    "sum_payments"
+                ),
             )
             .join(
                 subq,
@@ -301,17 +332,39 @@ def get_invoices_for_month():
                     TransactionMaster.invoice_number == subq.c.max_no,
                 ),
             )
+            .outerjoin(
+                payments_subq,
+                TransactionMaster.invoice_number == payments_subq.c.inv_no,
+            )
             .all()
         )
 
-        result = [
-            {
-                "customer_username": r.customer_username,
-                "invoice_number": int(r.invoice_number) if r.invoice_number is not None else None,
-                "invoiced": 1 if int(r.invoiced or 0) == 1 else 0,
-            }
-            for r in rows
-        ]
+        result: List[Dict] = []
+        for r in rows:
+            invoice_amount = float(r.invoice_amount or 0)
+            sum_payments = float(r.sum_payments or 0)
+
+            if sum_payments <= 0:
+                payment_status = "unpaid"
+            elif invoice_amount > 0 and sum_payments >= invoice_amount:
+                payment_status = "paid"
+            else:
+                payment_status = "partial"
+
+            result.append(
+                {
+                    "customer_username": r.customer_username,
+                    "invoice_number": (
+                        int(r.invoice_number)
+                        if r.invoice_number is not None
+                        else None
+                    ),
+                    "invoiced": 1 if int(r.invoiced or 0) == 1 else 0,
+                    "sum_payments": sum_payments,
+                    "invoice_amount": invoice_amount,
+                    "payment_status": payment_status,  # "unpaid" | "paid" | "partial"
+                }
+            )
 
         return jsonify(result), 200
 

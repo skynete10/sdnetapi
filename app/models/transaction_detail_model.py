@@ -47,3 +47,9 @@ class TransactionDetail(SDNetBase):
         server_default=text("CURRENT_TIMESTAMP"),
         onupdate=text("CURRENT_TIMESTAMP")
     )
+
+
+    def clear_payment(self):
+      total = (self.payment or 0) + (self.net_amount or 0)
+      self.payment = 0
+      self.net_amount = total

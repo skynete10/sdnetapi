@@ -31,6 +31,12 @@ class Customer(SDNetBase):
         server_default="1",
     )
 
+    wish = Column(
+        SmallInteger,
+        nullable=False,
+        server_default="1",
+    )
+
     created_at = Column(
         DateTime,
         server_default=text("CURRENT_TIMESTAMP")
