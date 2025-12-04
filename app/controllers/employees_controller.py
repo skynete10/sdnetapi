@@ -344,12 +344,8 @@ def get_customers_not_in_emp_relation():
     s = db.get_session()
 
     try:
-        emp_username = request.args.get("emp_username", type=str)
-
-        subq = s.query(EmpCustRelation.cust_username)
-        if emp_username:
-            subq = subq.filter(EmpCustRelation.emp_username == emp_username)
-        subq = subq.subquery()
+        # Subquery of ALL customer usernames that appear in the relation table
+        subq = s.query(EmpCustRelation.cust_username).distinct().subquery()
 
         rows = (
             s.query(
@@ -366,6 +362,7 @@ def get_customers_not_in_emp_relation():
                 CustomerAddress,
                 Customer.username == CustomerAddress.username,
             )
+            # Customers whose username is NOT in relation table
             .filter(~Customer.username.in_(subq))
             .order_by(Customer.fullname)
             .all()
@@ -382,7 +379,7 @@ def get_customers_not_in_emp_relation():
                 r.addr_floor,
             ]
             address = " ".join(
-                p.strip() for p in address_parts if p is not None and str(p).strip()
+                str(p).strip() for p in address_parts if p is not None and str(p).strip()
             )
 
             result.append(
@@ -545,6 +542,62 @@ def delete_customers_by_usernames(usernames: list):
     except SQLAlchemyError as e:
         s.rollback()
         return {"error": str(e)}, 500
+
+    finally:
+        s.close()
+
+
+def unassign_customers_controller():
+    """Controller logic to unassign multiple customers from an employee."""
+
+    db = get_db()
+    s = db.get_session()
+
+    try:
+        data = request.get_json() or {}
+
+        emp_username = data.get("emp_username")
+        cust_usernames = data.get("cust_usernames") or []
+
+        # Validate
+        if not emp_username:
+            return jsonify({"error": "emp_username is required"}), 400
+
+        if not isinstance(cust_usernames, list) or len(cust_usernames) == 0:
+            return jsonify({"error": "cust_usernames must be a non-empty list"}), 400
+
+        # Clean usernames
+        cust_usernames = [
+            (u or "").strip()
+            for u in cust_usernames
+            if (u or "").strip()
+        ]
+
+        if not cust_usernames:
+            return jsonify({"error": "cust_usernames list is empty after cleaning"}), 400
+
+        # Delete relations
+        deleted_count = (
+            s.query(EmpCustRelation)
+            .filter(
+                EmpCustRelation.emp_username == emp_username,
+                EmpCustRelation.cust_username.in_(cust_usernames),
+            )
+            .delete(synchronize_session=False)
+        )
+
+        s.commit()
+
+        return jsonify({
+            "message": "Customers unassigned successfully.",
+            "emp_username": emp_username,
+            "cust_usernames": cust_usernames,
+            "deleted_rows": deleted_count,
+        }), 200
+
+    except SQLAlchemyError as e:
+        s.rollback()
+        return jsonify({"error": str(e)}), 500
 
     finally:
         s.close()

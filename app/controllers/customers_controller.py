@@ -8,6 +8,8 @@ from decimal import Decimal,InvalidOperation
 import pandas as pd
 from app.models.services_model import Service
 import os
+from io import BytesIO
+
 
 
 def get_customers():

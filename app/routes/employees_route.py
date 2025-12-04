@@ -10,6 +10,7 @@ from app.controllers.employees_controller import (
     assign_customers_to_employee,
     load_customers_for_employee,
     delete_customers_by_usernames,
+    unassign_customers_controller,
 )
 
 employees_bp = Blueprint("employees_bp", __name__)
@@ -76,3 +77,8 @@ def delete_customers_route():
 
     result, status_code = delete_customers_by_usernames(cust_usernames)
     return jsonify(result), status_code
+
+
+@employees_bp.post("/api/employees/unassign-customers")
+def unassign_customers_route():
+    return unassign_customers_controller()
