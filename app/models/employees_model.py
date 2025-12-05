@@ -100,6 +100,52 @@ class EmployeeSalary(SDNetBase):
         onupdate=text("CURRENT_TIMESTAMP")
     )
 
+class EmpSalaryDetail(SDNetBase):
+    __tablename__ = "emp_salary_detail"
+
+    idemp_salary_detail = Column(
+        Integer,
+        primary_key=True,
+        autoincrement=True
+    )
+
+    emp_username = Column(
+        String(45),
+        nullable=True
+    )
+
+    payment_date = Column(
+        Date,
+        nullable=True
+    )
+
+    payment_amount = Column(
+        DECIMAL(12, 2),
+        nullable=True
+    )
+
+    created_at = Column(
+        DateTime,
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=True
+    )
+
+    updated_at = Column(
+        DateTime,
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP"),
+        nullable=True
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<EmpSalaryDetail("
+            f"idemp_salary_detail={self.idemp_salary_detail}, "
+            f"emp_username={self.emp_username!r}, "
+            f"payment_date={self.payment_date}, "
+            f"payment_amount={self.payment_amount})>"
+        )
+
 
 class EmpCustRelation(SDNetBase):
     __tablename__ = "emp_cust_relation"

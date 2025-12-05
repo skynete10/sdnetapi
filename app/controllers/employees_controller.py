@@ -125,28 +125,33 @@ def inline_update_salary(data: dict):
     """
     Handles inline update of EmployeeSalary:
     - Upserts by (employee_username, salary_month)
-    - field: 'salary_amount' | 'payment_method' | 'payment'
+    - field:
+        'salary_amount'  -> maps to base_salary
+        'payment_method' -> enum
+        'payment'        -> partial payment
+        'currency'       -> 'USD' | 'LBP'
+        'net_amount'     -> direct net_salary override (no recompute)
     """
     employee_username = data.get("employee_username")
     salary_month_str = data.get("salary_month")  # "YYYY-MM-01"
-    field = data.get("field")  # "salary_amount" | "payment_method" | "payment"
+    field = data.get("field")
     value = data.get("value")
 
-    # ---- basic payload validation ----
-    if not employee_username or not salary_month_str or field not in (
-        "salary_amount",
-        "payment_method",
-        "payment",
-    ):
-        return {"error": "Invalid payload"}, 400
+    # basic validation
+    if not employee_username:
+        return {"error": "employee_username is required"}, 400
+    if not salary_month_str:
+        return {"error": "salary_month is required"}, 400
+    if not field:
+        return {"error": "field is required"}, 400
 
     # parse date
     try:
         salary_month = date.fromisoformat(salary_month_str)
     except ValueError:
         return {"error": "Invalid salary_month format (expected YYYY-MM-DD)"}, 400
-    
-    db = get_db() 
+
+    db = get_db()
     session = db.get_session()
 
     try:
@@ -162,8 +167,23 @@ def inline_update_salary(data: dict):
             .one_or_none()
         )
 
-        # create if not exists
+        # ---- helper to safely cast to Decimal ----
+        def d(val, default="0.00"):
+            if val is None:
+                return Decimal(default)
+            if isinstance(val, Decimal):
+                return val
+            return Decimal(str(val))
+
+        # ---- create if not exists ----
         if row is None:
+            # default currency
+            initial_currency = "LBP"
+            if field == "currency":
+                if value not in ("USD", "LBP"):
+                    return {"error": "Invalid currency"}, 400
+                initial_currency = value
+
             row = EmployeeSalary(
                 employee_username=employee_username,
                 salary_month=salary_month,
@@ -172,20 +192,14 @@ def inline_update_salary(data: dict):
                 bonus=Decimal("0.00"),
                 deductions=Decimal("0.00"),
                 net_salary=Decimal("0.00"),
-                currency="LBP",
+                currency=initial_currency,
                 payment_method="cash",
             )
             session.add(row)
 
-        # convenience: cast current values to Decimal safely
-        def d(val, default="0.00"):
-            if val is None:
-                return Decimal(default)
-            if isinstance(val, Decimal):
-                return val
-            return Decimal(str(val))
-
         # ---- apply field update ----
+        recalc_net = False  # only recompute net when relevant
+
         if field == "salary_amount":
             # update base_salary
             try:
@@ -197,6 +211,7 @@ def inline_update_salary(data: dict):
                 return {"error": "salary_amount cannot be negative"}, 400
 
             row.base_salary = amount
+            recalc_net = True
 
         elif field == "payment_method":
             pm = (value or "").strip().lower()
@@ -223,15 +238,36 @@ def inline_update_salary(data: dict):
                 }, 400
 
             row.payment = payment_amount
+            recalc_net = True
 
-        # ---- recompute net_salary (example rule) ----
-        # net = base + bonus - deductions - payment
-        base = d(row.base_salary)
-        bonus = d(row.bonus)
-        deductions = d(row.deductions)
-        payment_val = d(row.payment)
+        elif field == "currency":
+            curr = (value or "").strip().upper()
+            if curr not in ("USD", "LBP"):
+                return {"error": "Invalid currency"}, 400
+            row.currency = curr
 
-        row.net_salary = base + bonus - deductions - payment_val
+        elif field == "net_amount":
+            # direct override of net_salary, NO formula recompute
+            try:
+                net_val = Decimal(str(value))
+            except Exception:
+                return {"error": "net_amount must be numeric"}, 400
+
+            row.net_salary = net_val
+            # do NOT set recalc_net = True here
+
+        else:
+            return {"error": f"Unsupported field '{field}'"}, 400
+
+        # ---- recompute net_salary ONLY when needed ----
+        if recalc_net:
+            # net = base + bonus - deductions - payment
+            base = d(row.base_salary)
+            bonus = d(row.bonus)
+            deductions = d(row.deductions)
+            payment_val = d(row.payment)
+
+            row.net_salary = base + bonus - deductions - payment_val
 
         session.commit()
 
@@ -240,6 +276,7 @@ def inline_update_salary(data: dict):
             "base_salary": float(row.base_salary) if row.base_salary is not None else None,
             "payment": float(row.payment) if row.payment is not None else None,
             "net_salary": float(row.net_salary) if row.net_salary is not None else None,
+            "currency": row.currency,
             "payment_method": row.payment_method,
         }, 200
 
